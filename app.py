@@ -62,7 +62,7 @@ def analyze_practice():
                 {
                     "error": (
                         "PNG/JPG uploads are accepted by the UI, but the selected model "
-                        "'meta-llama/llama-3.3-70b-instruct:free' is text-only. "
+                        "'nvidia/llama-3.3-nemotron-super-49b-v1:free' is text-only. "
                         "Please use text/PDF files or switch to a vision model."
                     )
                 }
@@ -106,7 +106,7 @@ def analyze_practice():
     if not parsed_files:
         return jsonify({"error": "No readable text content found in uploaded files."}), 400
 
-    model = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+    model = os.getenv("OPENROUTER_MODEL", "nvidia/llama-3.3-nemotron-super-49b-v1:free")
     url = "https://openrouter.ai/api/v1/chat/completions"
 
     file_blocks = "\n\n".join(
