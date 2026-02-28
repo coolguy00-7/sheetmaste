@@ -1,4 +1,5 @@
 import os
+import base64
 from io import BytesIO
 
 import requests
@@ -29,13 +30,17 @@ def analyze_practice():
     max_files = 20
     max_chars_per_file = 12000
     max_total_chars = 90000
+    max_image_bytes_per_file = 8 * 1024 * 1024
+    max_total_image_bytes = 24 * 1024 * 1024
     allowed_extensions = {".txt", ".md", ".csv", ".rtf", ".pdf", ".png", ".jpg", ".jpeg"}
 
     if len(files) > max_files:
         return jsonify({"error": f"Too many files. Max allowed is {max_files}."}), 400
 
     parsed_files = []
+    image_files = []
     total_chars = 0
+    total_image_bytes = 0
 
     for uploaded_file in files:
         filename = (uploaded_file.filename or "").strip()
@@ -58,15 +63,21 @@ def analyze_practice():
             continue
 
         if ext in {".png", ".jpg", ".jpeg"}:
-            return jsonify(
-                {
-                    "error": (
-                        "PNG/JPG uploads are accepted by the UI, but the selected model "
-                        "'nvidia/llama-3.3-nemotron-super-49b-v1:free' is text-only. "
-                        "Please use text/PDF files or switch to a vision model."
-                    )
-                }
-            ), 400
+            image_size = len(raw)
+            if image_size > max_image_bytes_per_file:
+                return jsonify(
+                    {"error": f"'{filename}' exceeds {max_image_bytes_per_file // (1024 * 1024)}MB image limit."}
+                ), 400
+            total_image_bytes += image_size
+            if total_image_bytes > max_total_image_bytes:
+                return jsonify(
+                    {"error": f"Total image upload size exceeds {max_total_image_bytes // (1024 * 1024)}MB."}
+                ), 400
+
+            mime = "image/png" if ext == ".png" else "image/jpeg"
+            data_uri = f"data:{mime};base64,{base64.b64encode(raw).decode('utf-8')}"
+            image_files.append({"filename": filename, "data_uri": data_uri})
+            continue
 
         if ext == ".pdf":
             try:
@@ -103,10 +114,10 @@ def analyze_practice():
 
         parsed_files.append({"filename": filename, "text": text})
 
-    if not parsed_files:
+    if not parsed_files and not image_files:
         return jsonify({"error": "No readable text content found in uploaded files."}), 400
 
-    model = os.getenv("OPENROUTER_MODEL", "nvidia/llama-3.3-nemotron-super-49b-v1:free")
+    model = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-small-3.1-24b-instruct:free")
     url = "https://openrouter.ai/api/v1/chat/completions"
 
     file_blocks = "\n\n".join(
@@ -115,11 +126,12 @@ def analyze_practice():
             for item in parsed_files
         ]
     )
+    image_names = ", ".join([item["filename"] for item in image_files]) or "None"
     analysis_prompt = f"""
 You are analyzing multiple student practice materials.
 
 Goal:
-Tell me exactly what is being covered across these files.
+Tell me exactly what is being covered across these files and images.
 
 Output format:
 1) Covered topics:
@@ -135,15 +147,23 @@ Output format:
 
 Use clear headings and keep it concise but specific.
 
+Image files:
+{image_names}
+
 File contents:
 {file_blocks or "None"}
 """.strip()
+
+    user_content = [{"type": "text", "text": analysis_prompt}]
+    for image in image_files:
+        user_content.append({"type": "text", "text": f"Image file: {image['filename']}"})
+        user_content.append({"type": "image_url", "image_url": {"url": image["data_uri"]}})
 
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": "You produce precise, structured educational analysis."},
-            {"role": "user", "content": analysis_prompt},
+            {"role": "user", "content": user_content},
         ],
     }
     headers = {
@@ -166,8 +186,8 @@ File contents:
     return jsonify(
         {
             "response": text,
-            "files_analyzed": [item["filename"] for item in parsed_files],
-            "total_files": len(parsed_files),
+            "files_analyzed": [item["filename"] for item in parsed_files] + [item["filename"] for item in image_files],
+            "total_files": len(parsed_files) + len(image_files),
         }
     )
 
