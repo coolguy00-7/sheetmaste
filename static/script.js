@@ -99,10 +99,37 @@ form.addEventListener("submit", async (event) => {
 });
 
 const splitSheetText = (text) => {
-  const lines = text.split("\n");
-  const midpoint = Math.ceil(lines.length / 2);
-  const first = lines.slice(0, midpoint).join("\n").trim();
-  const second = lines.slice(midpoint).join("\n").trim();
+  const cleaned = text
+    .replace(/\n{3,}/g, "\n\n")
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .trim();
+
+  const paragraphs = cleaned.split(/\n{2,}/).filter(Boolean);
+  if (paragraphs.length <= 1) {
+    return [cleaned, ""];
+  }
+
+  const totalChars = paragraphs.reduce((sum, p) => sum + p.length, 0);
+  const target = Math.floor(totalChars / 2);
+  let running = 0;
+  let splitIndex = 0;
+
+  for (let i = 0; i < paragraphs.length; i += 1) {
+    running += paragraphs[i].length;
+    if (running >= target) {
+      splitIndex = i + 1;
+      break;
+    }
+  }
+
+  if (splitIndex <= 0 || splitIndex >= paragraphs.length) {
+    splitIndex = Math.ceil(paragraphs.length / 2);
+  }
+
+  const first = paragraphs.slice(0, splitIndex).join("\n\n").trim();
+  const second = paragraphs.slice(splitIndex).join("\n\n").trim();
   return [first, second];
 };
 

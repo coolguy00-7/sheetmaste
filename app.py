@@ -308,9 +308,12 @@ Create a highly compressed exam reference sheet from the analysis below.
 Constraints:
 - Cover every topic and skill mentioned in the analysis.
 - Output plain text only (no markdown fences).
-- Keep formatting compact with short headers, bullets, formulas, and quick examples.
-- Target print density for two letter-sized pages at 6pt font.
-- Use approximately 1400-2000 words.
+- Keep formatting aggressively compact with short headers, bullets, formulas, quick examples, and minimal spacing.
+- Maximize information density for exactly two letter-sized pages at 6pt font.
+- Use approximately 2200-3200 words.
+- Avoid long introductions and avoid filler wording.
+- Use very short bullet lines and compact notation where possible.
+- Keep blank lines to a minimum.
 - Include:
   1) Topic map
   2) Core rules/formulas/facts
