@@ -27,7 +27,13 @@ form.addEventListener("submit", async (event) => {
 
     const data = await res.json();
     if (!res.ok) {
-      output.textContent = data.error || "Request failed.";
+      const details =
+        typeof data.details === "string"
+          ? data.details
+          : data.details
+            ? JSON.stringify(data.details, null, 2)
+            : "";
+      output.textContent = details ? `${data.error || "Request failed."}\n\n${details}` : data.error || "Request failed.";
       meta.textContent = "";
       return;
     }

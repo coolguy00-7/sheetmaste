@@ -1,5 +1,6 @@
 import os
 import base64
+import time
 from io import BytesIO
 
 import requests
@@ -171,18 +172,30 @@ File contents:
         "Content-Type": "application/json",
     }
 
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=60)
-        response.raise_for_status()
-        body = response.json()
-    except requests.HTTPError as exc:
-        status_code = exc.response.status_code if exc.response is not None else None
-        details = ""
-        if exc.response is not None:
-            try:
-                details = exc.response.json()
-            except ValueError:
-                details = (exc.response.text or "")[:500]
+    response = None
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            break
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+                continue
+
+    if response is None:
+        return jsonify({"error": f"OpenRouter request failed: {last_error or 'No response'}"}), 502
+
+    if not response.ok:
+        status_code = response.status_code
+        try:
+            details = response.json()
+        except ValueError:
+            details = (response.text or "")[:500]
 
         if status_code == 404:
             return (
@@ -190,6 +203,17 @@ File contents:
                     {
                         "error": "OpenRouter model not found or unavailable.",
                         "model": model,
+                        "details": details,
+                    }
+                ),
+                502,
+            )
+
+        if status_code == 429:
+            return (
+                jsonify(
+                    {
+                        "error": "OpenRouter rate/credit limit hit (429). Try again in 30-60 seconds.",
                         "details": details,
                     }
                 ),
@@ -205,8 +229,8 @@ File contents:
             ),
             502,
         )
-    except requests.RequestException as exc:
-        return jsonify({"error": f"OpenRouter request failed: {exc}"}), 502
+
+    body = response.json()
 
     text = ((body.get("choices") or [{}])[0].get("message") or {}).get("content", "")
 
