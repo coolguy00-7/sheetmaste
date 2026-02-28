@@ -3,29 +3,46 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sheetmaster Flask + OpenRouter</title>
+    <title>Sheetmaster Analyzer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Space+Grotesk:wght@500;700&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
   </head>
   <body>
-    <main class="container">
-      <h1>Sheetmaster</h1>
-      <p>Upload practice files and get an OpenRouter coverage analysis.</p>
+    <main class="app-shell">
+      <header class="hero">
+        <p class="eyebrow">Sheetmaster</p>
+        <h1>Practice Coverage Analyzer</h1>
+        <p class="lead">Drop worksheets, notes, PDFs, and screenshots. Get instant topic and skill coverage.</p>
+      </header>
 
-      <form id="analyze-form">
-        <label for="files">Practice Text Files</label>
-        <input
-          id="files"
-          name="files"
-          type="file"
-          multiple
-          accept=".txt,.md,.csv,.rtf,.pdf,.png,.jpg,.jpeg,text/plain,application/pdf,image/png,image/jpeg"
-          required
-        />
-        <button type="submit">Analyze Coverage</button>
-      </form>
+      <section class="panel">
+        <form id="analyze-form">
+          <label for="files" class="label">Practice Files</label>
+          <div id="dropzone" class="dropzone">
+            <p><strong>Drag and drop</strong> files here</p>
+            <p class="dropzone-muted">or browse from your device</p>
+            <input
+              id="files"
+              name="files"
+              type="file"
+              multiple
+              accept=".txt,.md,.csv,.rtf,.pdf,.png,.jpg,.jpeg,text/plain,application/pdf,image/png,image/jpeg"
+              required
+            />
+          </div>
+          <p id="file-summary" class="file-summary">No files selected.</p>
+          <div id="file-list" class="file-list"></div>
+          <button type="submit">Analyze Coverage</button>
+        </form>
+      </section>
 
-      <section>
-        <h2>Analysis</h2>
+      <section class="panel panel-analysis">
+        <h2>Analysis Output</h2>
         <p id="meta"></p>
         <pre id="output">No response yet.</pre>
       </section>
