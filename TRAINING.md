@@ -9,6 +9,19 @@ Set with `REFERENCE_GENERATION_MODE` in `.env`:
 - `local`
 - `auto` (try local first, then OpenRouter)
 
+For highest quality on free models, use:
+
+```dotenv
+REFERENCE_GENERATION_MODE=openrouter
+REFERENCE_QUALITY_MODE=high
+OPENROUTER_REFERENCE_MODEL=meta-llama/llama-3.3-70b-instruct:free
+OPENROUTER_REFERENCE_FALLBACK_MODELS=mistralai/mistral-small-3.1-24b-instruct:free,google/gemma-3-12b-it:free,google/gemma-3-4b-it:free
+OPENROUTER_CRITIQUE_MODEL=google/gemma-3-12b-it:free
+OPENROUTER_CRITIQUE_FALLBACK_MODELS=google/gemma-3-4b-it:free
+OPENROUTER_JUDGE_MODEL=google/gemma-3-12b-it:free
+OPENROUTER_JUDGE_FALLBACK_MODELS=google/gemma-3-4b-it:free
+```
+
 ## 1) Build your dataset
 
 Raw format (`.jsonl`, one object per line):

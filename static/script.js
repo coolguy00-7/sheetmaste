@@ -9,6 +9,13 @@ const generateSheetBtn = document.getElementById("generate-sheet-btn");
 const sheetMeta = document.getElementById("sheet-meta");
 const sheetPage1 = document.getElementById("sheet-page-1");
 const sheetPage2 = document.getElementById("sheet-page-2");
+const reqEventName = document.getElementById("req-event-name");
+const reqDivision = document.getElementById("req-division");
+const reqDifficulty = document.getElementById("req-difficulty");
+const reqTargetWords = document.getElementById("req-target-words");
+const reqRequiredTopics = document.getElementById("req-required-topics");
+const reqBannedTopics = document.getElementById("req-banned-topics");
+const reqNotes = document.getElementById("req-notes");
 
 const renderFileSelection = () => {
   const files = filesInput.files;
@@ -140,6 +147,16 @@ generateSheetBtn.addEventListener("click", async () => {
     return;
   }
 
+  const requirements = {
+    event_name: reqEventName.value.trim(),
+    division: reqDivision.value.trim(),
+    difficulty: reqDifficulty.value,
+    target_length_words: Number(reqTargetWords.value) || 2600,
+    required_topics: reqRequiredTopics.value.trim(),
+    banned_topics: reqBannedTopics.value.trim(),
+    notes: reqNotes.value.trim(),
+  };
+
   sheetMeta.textContent = "Generating 2-page reference sheet...";
   sheetPage1.textContent = "Generating...";
   sheetPage2.textContent = "";
@@ -148,7 +165,7 @@ generateSheetBtn.addEventListener("click", async () => {
     const res = await fetch("/api/generate-reference-sheet", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ analysis }),
+      body: JSON.stringify({ analysis, requirements }),
     });
 
     const data = await res.json();
@@ -168,7 +185,12 @@ generateSheetBtn.addEventListener("click", async () => {
     const [pageOne, pageTwo] = splitSheetText(data.reference_sheet || "");
     sheetPage1.textContent = pageOne || "No content generated.";
     sheetPage2.textContent = pageTwo || "No overflow content.";
-    sheetMeta.textContent = `Reference sheet generated using ${data.model_used}.`;
+    const quality = data.quality || {};
+    const qualityScore =
+      typeof quality.score === "number" || typeof quality.score === "string"
+        ? ` | quality score ${quality.score}`
+        : "";
+    sheetMeta.textContent = `Reference sheet generated using ${data.model_used}${qualityScore}.`;
   } catch (error) {
     sheetMeta.textContent = "Sheet generation failed.";
     sheetPage1.textContent = `Network error: ${error.message}`;

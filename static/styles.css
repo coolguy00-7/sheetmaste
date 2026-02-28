@@ -156,6 +156,46 @@ button:hover {
   margin-top: 10px;
 }
 
+.requirements-grid {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field span {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  border: 1px solid rgba(18, 33, 51, 0.18);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.85);
+  padding: 9px 10px;
+  font: inherit;
+  color: var(--ink);
+}
+
+.field textarea {
+  resize: vertical;
+}
+
+.field-wide {
+  grid-column: 1 / -1;
+}
+
 pre {
   margin: 0;
   background: #f3f7fc;
@@ -221,6 +261,10 @@ pre {
   .panel {
     border-radius: 16px;
     padding: 14px;
+  }
+
+  .requirements-grid {
+    grid-template-columns: 1fr;
   }
 }
 

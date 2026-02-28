@@ -1,5 +1,7 @@
 import os
 import base64
+import json
+import re
 import time
 from io import BytesIO
 
@@ -33,19 +35,242 @@ Constraints:
   5) Mini worked examples
   6) Last-minute checklist
 
+Extra requirements:
+{requirements_block}
+
 Analysis to transform:
 {analysis_text}
 """.strip()
 
 
-def build_reference_sheet_prompt(analysis_text):
-    return REFERENCE_SHEET_PROMPT_TEMPLATE.format(analysis_text=analysis_text)
+def _split_csv_or_lines(value):
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if not isinstance(value, str):
+        return []
+    parts = re.split(r"[,\n;]+", value)
+    return [item.strip() for item in parts if item.strip()]
 
 
-def generate_reference_sheet_local(analysis_text):
+def _normalize_requirements(raw):
+    raw = raw or {}
+    sections = _split_csv_or_lines(raw.get("allowed_sections"))
+    required_topics = _split_csv_or_lines(raw.get("required_topics"))
+    banned_topics = _split_csv_or_lines(raw.get("banned_topics"))
+    target_length_words = raw.get("target_length_words")
+    try:
+        target_length_words = int(target_length_words) if target_length_words is not None else 2600
+    except (TypeError, ValueError):
+        target_length_words = 2600
+    target_length_words = max(1200, min(4200, target_length_words))
+
+    difficulty = str(raw.get("difficulty", "advanced")).strip().lower()
+    if difficulty not in {"beginner", "intermediate", "advanced"}:
+        difficulty = "advanced"
+
+    event_name = str(raw.get("event_name", "Science Olympiad event")).strip() or "Science Olympiad event"
+    division = str(raw.get("division", "B/C")).strip() or "B/C"
+    notes = str(raw.get("notes", "")).strip()
+
+    if not sections:
+        sections = [
+            "Topic map",
+            "Core rules/formulas/facts",
+            "Common traps/mistakes",
+            "Fast solving patterns",
+            "Mini worked examples",
+            "Last-minute checklist",
+        ]
+
+    return {
+        "event_name": event_name[:120],
+        "division": division[:60],
+        "difficulty": difficulty,
+        "target_length_words": target_length_words,
+        "allowed_sections": sections[:12],
+        "required_topics": required_topics[:40],
+        "banned_topics": banned_topics[:40],
+        "notes": notes[:1200],
+    }
+
+
+def _requirements_to_block(requirements):
+    lines = [
+        f"- Event: {requirements['event_name']}",
+        f"- Division: {requirements['division']}",
+        f"- Difficulty: {requirements['difficulty']}",
+        f"- Target length (words): {requirements['target_length_words']}",
+        f"- Required sections: {', '.join(requirements['allowed_sections'])}",
+        f"- Required topics: {', '.join(requirements['required_topics']) if requirements['required_topics'] else 'None explicitly provided'}",
+        f"- Disallowed topics: {', '.join(requirements['banned_topics']) if requirements['banned_topics'] else 'None'}",
+        f"- Additional notes: {requirements['notes'] or 'None'}",
+    ]
+    return "\n".join(lines)
+
+
+def build_reference_sheet_prompt(analysis_text, requirements):
+    return REFERENCE_SHEET_PROMPT_TEMPLATE.format(
+        analysis_text=analysis_text,
+        requirements_block=_requirements_to_block(requirements),
+    )
+
+
+def generate_reference_sheet_local(analysis_text, requirements):
     from training.local_generator import generate_reference_sheet_with_local_model
 
-    return generate_reference_sheet_with_local_model(build_reference_sheet_prompt(analysis_text))
+    prompt = build_reference_sheet_prompt(analysis_text, requirements)
+    return generate_reference_sheet_with_local_model(prompt)
+
+
+def _safe_parse_json_object(text):
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{[\s\S]*\}", text)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+
+
+def _openrouter_text(api_key, prompt, primary_model, fallback_models_raw):
+    user_content = [{"type": "text", "text": prompt}]
+    return call_openrouter_with_fallback(
+        api_key,
+        user_content,
+        primary_model=primary_model,
+        fallback_models_raw=fallback_models_raw,
+    )
+
+
+def _generate_reference_sheet_openrouter_high_quality(api_key, analysis_text, requirements):
+    gen_model = os.getenv("OPENROUTER_REFERENCE_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+    gen_fallback = os.getenv(
+        "OPENROUTER_REFERENCE_FALLBACK_MODELS",
+        "mistralai/mistral-small-3.1-24b-instruct:free,google/gemma-3-12b-it:free,google/gemma-3-4b-it:free",
+    )
+    critique_model = os.getenv("OPENROUTER_CRITIQUE_MODEL", "google/gemma-3-12b-it:free")
+    critique_fallback = os.getenv("OPENROUTER_CRITIQUE_FALLBACK_MODELS", "google/gemma-3-4b-it:free")
+    judge_model = os.getenv("OPENROUTER_JUDGE_MODEL", critique_model)
+    judge_fallback = os.getenv("OPENROUTER_JUDGE_FALLBACK_MODELS", critique_fallback)
+
+    base_prompt = build_reference_sheet_prompt(analysis_text, requirements)
+    draft_result = _openrouter_text(api_key, base_prompt, gen_model, gen_fallback)
+    if not draft_result["ok"]:
+        return draft_result
+    draft = draft_result["text"]
+
+    critique_prompt = f"""
+You are a strict quality reviewer for Science Olympiad reference sheets.
+
+Return concise bullets:
+1) Coverage gaps (missing required topics or sections)
+2) Potential factual/logic risks
+3) Density/format issues (too verbose or too sparse)
+4) Specific rewrites to improve competitive usefulness
+
+Reference requirements:
+{_requirements_to_block(requirements)}
+
+Analysis source:
+{analysis_text}
+
+Draft sheet:
+{draft}
+""".strip()
+    critique_result = _openrouter_text(api_key, critique_prompt, critique_model, critique_fallback)
+    critique = critique_result["text"] if critique_result["ok"] else "No critique available."
+
+    revise_prompt = f"""
+Revise the draft into a significantly better final reference sheet.
+
+Rules:
+- Keep plain text only.
+- Keep extremely high information density.
+- Strictly satisfy every requirement.
+- Remove weak or generic lines.
+- Prefer concrete, test-usable compact content.
+- Output only the final revised sheet.
+
+Requirements:
+{_requirements_to_block(requirements)}
+
+Analysis:
+{analysis_text}
+
+Draft:
+{draft}
+
+Critique to address:
+{critique}
+""".strip()
+    final_result = _openrouter_text(api_key, revise_prompt, gen_model, gen_fallback)
+    if not final_result["ok"]:
+        return {
+            "ok": True,
+            "text": draft,
+            "model_used": draft_result["model_used"],
+            "quality": {"score": None, "notes": ["Revision stage failed; using draft output."]},
+        }
+    final_sheet = final_result["text"]
+
+    judge_prompt = f"""
+Score this Science Olympiad reference sheet and return ONLY JSON.
+Schema:
+{{
+  "score": 0-100,
+  "coverage": 0-100,
+  "accuracy_risk": 0-100,
+  "density": 0-100,
+  "requirements_fit": 0-100,
+  "issues": ["short bullet", "..."]
+}}
+
+Higher is better except `accuracy_risk` where higher = higher risk.
+
+Requirements:
+{_requirements_to_block(requirements)}
+
+Analysis:
+{analysis_text}
+
+Sheet:
+{final_sheet}
+""".strip()
+    judge_result = _openrouter_text(api_key, judge_prompt, judge_model, judge_fallback)
+    quality = {"score": None, "coverage": None, "accuracy_risk": None, "density": None, "requirements_fit": None, "issues": []}
+    if judge_result["ok"]:
+        parsed = _safe_parse_json_object(judge_result["text"])
+        if isinstance(parsed, dict):
+            quality.update(
+                {
+                    "score": parsed.get("score"),
+                    "coverage": parsed.get("coverage"),
+                    "accuracy_risk": parsed.get("accuracy_risk"),
+                    "density": parsed.get("density"),
+                    "requirements_fit": parsed.get("requirements_fit"),
+                    "issues": parsed.get("issues") if isinstance(parsed.get("issues"), list) else [],
+                }
+            )
+
+    return {
+        "ok": True,
+        "text": final_sheet,
+        "model_used": final_result["model_used"],
+        "quality": quality,
+        "pipeline_models": {
+            "draft_model": draft_result["model_used"],
+            "critique_model": critique_result["model_used"] if critique_result["ok"] else None,
+            "final_model": final_result["model_used"],
+            "judge_model": judge_result["model_used"] if judge_result["ok"] else None,
+        },
+    }
 
 
 def call_openrouter_with_fallback(api_key, user_content, primary_model=None, fallback_models_raw=None):
@@ -332,14 +557,21 @@ def generate_reference_sheet():
     analysis_text = (data.get("analysis") or "").strip()
     if not analysis_text:
         return jsonify({"error": "Analysis text is required."}), 400
+    requirements = _normalize_requirements(data.get("requirements") or {})
 
     generation_mode = os.getenv("REFERENCE_GENERATION_MODE", "openrouter").strip().lower()
     if generation_mode not in {"openrouter", "local", "auto"}:
         return jsonify({"error": "REFERENCE_GENERATION_MODE must be one of: openrouter, local, auto"}), 400
 
+    quality_mode = os.getenv("REFERENCE_QUALITY_MODE", "high").strip().lower()
+    if quality_mode not in {"standard", "high"}:
+        return jsonify({"error": "REFERENCE_QUALITY_MODE must be one of: standard, high"}), 400
+
     if generation_mode in {"local", "auto"}:
         try:
-            local_result = generate_reference_sheet_local(analysis_text)
+            local_result = generate_reference_sheet_local(analysis_text, requirements)
+            local_result["requirements"] = requirements
+            local_result["quality_mode"] = "local_single_pass"
             return jsonify(local_result)
         except Exception as exc:
             if generation_mode == "local":
@@ -349,24 +581,29 @@ def generate_reference_sheet():
     if not api_key:
         return jsonify({"error": "Missing OPENROUTER_API_KEY in environment."}), 400
 
-    prompt = build_reference_sheet_prompt(analysis_text)
-
-    user_content = [{"type": "text", "text": prompt}]
-    reference_model = os.getenv("OPENROUTER_REFERENCE_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
-    reference_fallback_models = os.getenv(
-        "OPENROUTER_REFERENCE_FALLBACK_MODELS",
-        "mistralai/mistral-small-3.1-24b-instruct:free,google/gemma-3-12b-it:free,google/gemma-3-4b-it:free",
-    )
-    result = call_openrouter_with_fallback(
-        api_key,
-        user_content,
-        primary_model=reference_model,
-        fallback_models_raw=reference_fallback_models,
-    )
+    if quality_mode == "high":
+        result = _generate_reference_sheet_openrouter_high_quality(api_key, analysis_text, requirements)
+    else:
+        prompt = build_reference_sheet_prompt(analysis_text, requirements)
+        reference_model = os.getenv("OPENROUTER_REFERENCE_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+        reference_fallback_models = os.getenv(
+            "OPENROUTER_REFERENCE_FALLBACK_MODELS",
+            "mistralai/mistral-small-3.1-24b-instruct:free,google/gemma-3-12b-it:free,google/gemma-3-4b-it:free",
+        )
+        result = _openrouter_text(api_key, prompt, reference_model, reference_fallback_models)
     if not result["ok"]:
         return jsonify({**result["error"], "models_tried": result["models_tried"], "failed_models": result["failed_models"]}), 502
 
-    return jsonify({"reference_sheet": result["text"], "model_used": result["model_used"]})
+    return jsonify(
+        {
+            "reference_sheet": result["text"],
+            "model_used": result["model_used"],
+            "quality": result.get("quality"),
+            "pipeline_models": result.get("pipeline_models"),
+            "requirements": requirements,
+            "quality_mode": quality_mode,
+        }
+    )
 
 
 if __name__ == "__main__":
