@@ -118,7 +118,17 @@ def analyze_practice():
     if not parsed_files and not image_files:
         return jsonify({"error": "No readable text content found in uploaded files."}), 400
 
-    model = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-small-3.1-24b-instruct:free")
+    primary_model = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-small-3.1-24b-instruct:free")
+    fallback_models_raw = os.getenv(
+        "OPENROUTER_FALLBACK_MODELS",
+        "google/gemma-3-12b-it:free,google/gemma-3-4b-it:free",
+    )
+    models_to_try = [primary_model]
+    for fallback_model in fallback_models_raw.split(","):
+        fallback_model = fallback_model.strip()
+        if fallback_model and fallback_model not in models_to_try:
+            models_to_try.append(fallback_model)
+
     url = "https://openrouter.ai/api/v1/chat/completions"
 
     file_blocks = "\n\n".join(
@@ -160,88 +170,84 @@ File contents:
         user_content.append({"type": "text", "text": f"Image file: {image['filename']}"})
         user_content.append({"type": "image_url", "image_url": {"url": image["data_uri"]}})
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You produce precise, structured educational analysis."},
-            {"role": "user", "content": user_content},
-        ],
-    }
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    failed_models = []
+    final_error = {"error": "OpenRouter request failed.", "details": "No models attempted."}
+    text = ""
+    model_used = ""
 
-    response = None
-    last_error = None
-    for attempt in range(3):
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=60)
-            if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
-                time.sleep(1.5 * (attempt + 1))
+    for model in models_to_try:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You produce precise, structured educational analysis."},
+                {"role": "user", "content": user_content},
+            ],
+        }
+
+        response = None
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=60)
+                if response.status_code in {429, 500, 502, 503, 504} and attempt < 2:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                break
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+
+        if response is None:
+            failed_models.append(model)
+            final_error = {"error": f"OpenRouter request failed for model '{model}'.", "details": str(last_error)}
+            continue
+
+        if not response.ok:
+            status_code = response.status_code
+            try:
+                details = response.json()
+            except ValueError:
+                details = (response.text or "")[:500]
+
+            failed_models.append(model)
+            final_error = {
+                "error": f"OpenRouter request failed with status {status_code}.",
+                "details": details,
+                "model": model,
+            }
+
+            # Try another model on common provider/model/rate failures.
+            if status_code in {402, 404, 429, 500, 502, 503, 504}:
                 continue
             break
-        except requests.RequestException as exc:
-            last_error = exc
-            if attempt < 2:
-                time.sleep(1.5 * (attempt + 1))
-                continue
 
-    if response is None:
-        return jsonify({"error": f"OpenRouter request failed: {last_error or 'No response'}"}), 502
+        body = response.json()
+        text = ((body.get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        if text:
+            model_used = model
+            break
 
-    if not response.ok:
-        status_code = response.status_code
-        try:
-            details = response.json()
-        except ValueError:
-            details = (response.text or "")[:500]
-
-        if status_code == 404:
-            return (
-                jsonify(
-                    {
-                        "error": "OpenRouter model not found or unavailable.",
-                        "model": model,
-                        "details": details,
-                    }
-                ),
-                502,
-            )
-
-        if status_code == 429:
-            return (
-                jsonify(
-                    {
-                        "error": "OpenRouter rate/credit limit hit (429). Try again in 30-60 seconds.",
-                        "details": details,
-                    }
-                ),
-                502,
-            )
-
-        return (
-            jsonify(
-                {
-                    "error": f"OpenRouter request failed with status {status_code}.",
-                    "details": details,
-                }
-            ),
-            502,
-        )
-
-    body = response.json()
-
-    text = ((body.get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        failed_models.append(model)
+        final_error = {
+            "error": f"OpenRouter returned no text response for model '{model}'.",
+            "details": body,
+        }
 
     if not text:
-        return jsonify({"error": "OpenRouter returned no text response.", "raw": body}), 502
+        return jsonify({**final_error, "models_tried": models_to_try, "failed_models": failed_models}), 502
 
     return jsonify(
         {
             "response": text,
             "files_analyzed": [item["filename"] for item in parsed_files] + [item["filename"] for item in image_files],
             "total_files": len(parsed_files) + len(image_files),
+            "model_used": model_used or primary_model,
         }
     )
 
