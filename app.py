@@ -13,6 +13,41 @@ load_dotenv()
 app = Flask(__name__)
 
 
+REFERENCE_SHEET_PROMPT_TEMPLATE = """
+Create a highly compressed exam reference sheet from the analysis below.
+
+Constraints:
+- Cover every topic and skill mentioned in the analysis.
+- Output plain text only (no markdown fences).
+- Keep formatting aggressively compact with short headers, bullets, formulas, quick examples, and minimal spacing.
+- Maximize information density for exactly two letter-sized pages at 6pt font.
+- Use approximately 2200-3200 words.
+- Avoid long introductions and avoid filler wording.
+- Use very short bullet lines and compact notation where possible.
+- Keep blank lines to a minimum.
+- Include:
+  1) Topic map
+  2) Core rules/formulas/facts
+  3) Common traps/mistakes
+  4) Fast solving patterns
+  5) Mini worked examples
+  6) Last-minute checklist
+
+Analysis to transform:
+{analysis_text}
+""".strip()
+
+
+def build_reference_sheet_prompt(analysis_text):
+    return REFERENCE_SHEET_PROMPT_TEMPLATE.format(analysis_text=analysis_text)
+
+
+def generate_reference_sheet_local(analysis_text):
+    from training.local_generator import generate_reference_sheet_with_local_model
+
+    return generate_reference_sheet_with_local_model(build_reference_sheet_prompt(analysis_text))
+
+
 def call_openrouter_with_fallback(api_key, user_content, primary_model=None, fallback_models_raw=None):
     primary_model = primary_model or os.getenv("OPENROUTER_MODEL", "mistralai/mistral-small-3.1-24b-instruct:free")
     fallback_models_raw = fallback_models_raw if fallback_models_raw is not None else os.getenv(
@@ -298,33 +333,23 @@ def generate_reference_sheet():
     if not analysis_text:
         return jsonify({"error": "Analysis text is required."}), 400
 
+    generation_mode = os.getenv("REFERENCE_GENERATION_MODE", "openrouter").strip().lower()
+    if generation_mode not in {"openrouter", "local", "auto"}:
+        return jsonify({"error": "REFERENCE_GENERATION_MODE must be one of: openrouter, local, auto"}), 400
+
+    if generation_mode in {"local", "auto"}:
+        try:
+            local_result = generate_reference_sheet_local(analysis_text)
+            return jsonify(local_result)
+        except Exception as exc:
+            if generation_mode == "local":
+                return jsonify({"error": f"Local generation failed: {exc}"}), 500
+
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         return jsonify({"error": "Missing OPENROUTER_API_KEY in environment."}), 400
 
-    prompt = f"""
-Create a highly compressed exam reference sheet from the analysis below.
-
-Constraints:
-- Cover every topic and skill mentioned in the analysis.
-- Output plain text only (no markdown fences).
-- Keep formatting aggressively compact with short headers, bullets, formulas, quick examples, and minimal spacing.
-- Maximize information density for exactly two letter-sized pages at 6pt font.
-- Use approximately 2200-3200 words.
-- Avoid long introductions and avoid filler wording.
-- Use very short bullet lines and compact notation where possible.
-- Keep blank lines to a minimum.
-- Include:
-  1) Topic map
-  2) Core rules/formulas/facts
-  3) Common traps/mistakes
-  4) Fast solving patterns
-  5) Mini worked examples
-  6) Last-minute checklist
-
-Analysis to transform:
-{analysis_text}
-""".strip()
+    prompt = build_reference_sheet_prompt(analysis_text)
 
     user_content = [{"type": "text", "text": prompt}]
     reference_model = os.getenv("OPENROUTER_REFERENCE_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
