@@ -149,21 +149,125 @@ def _openrouter_text(api_key, prompt, primary_model, fallback_models_raw):
     )
 
 
+def _parse_model_list(models_raw):
+    if not models_raw:
+        return []
+    return [model.strip() for model in models_raw.split(",") if model.strip()]
+
+
+def _coerce_score(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _judge_sheet_quality(api_key, analysis_text, requirements, sheet_text, judge_model, judge_fallback):
+    judge_prompt = f"""
+Score this Science Olympiad reference sheet and return ONLY JSON.
+Schema:
+{{
+  "score": 0-100,
+  "coverage": 0-100,
+  "accuracy_risk": 0-100,
+  "density": 0-100,
+  "requirements_fit": 0-100,
+  "issues": ["short bullet", "..."]
+}}
+
+Higher is better except `accuracy_risk` where higher = higher risk.
+
+Requirements:
+{_requirements_to_block(requirements)}
+
+Analysis:
+{analysis_text}
+
+Sheet:
+{sheet_text}
+""".strip()
+    judge_result = _openrouter_text(api_key, judge_prompt, judge_model, judge_fallback)
+    quality = {"score": None, "coverage": None, "accuracy_risk": None, "density": None, "requirements_fit": None, "issues": []}
+    if judge_result["ok"]:
+        parsed = _safe_parse_json_object(judge_result["text"])
+        if isinstance(parsed, dict):
+            quality.update(
+                {
+                    "score": _coerce_score(parsed.get("score")),
+                    "coverage": _coerce_score(parsed.get("coverage")),
+                    "accuracy_risk": _coerce_score(parsed.get("accuracy_risk")),
+                    "density": _coerce_score(parsed.get("density")),
+                    "requirements_fit": _coerce_score(parsed.get("requirements_fit")),
+                    "issues": parsed.get("issues") if isinstance(parsed.get("issues"), list) else [],
+                }
+            )
+    return judge_result, quality
+
+
 def _generate_reference_sheet_openrouter_high_quality(api_key, analysis_text, requirements):
     gen_model = os.getenv("OPENROUTER_REFERENCE_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
     gen_fallback = os.getenv(
         "OPENROUTER_REFERENCE_FALLBACK_MODELS",
         "mistralai/mistral-small-3.1-24b-instruct:free,google/gemma-3-12b-it:free,google/gemma-3-4b-it:free",
     )
+    candidate_models = _parse_model_list(
+        os.getenv(
+            "OPENROUTER_REFERENCE_CANDIDATE_MODELS",
+            (
+                "meta-llama/llama-3.3-70b-instruct:free,"
+                "mistralai/mistral-small-3.1-24b-instruct:free,"
+                "google/gemma-3-12b-it:free"
+            ),
+        )
+    )
+    if not candidate_models:
+        candidate_models = [gen_model]
+    max_candidates = max(1, min(5, int(os.getenv("OPENROUTER_REFERENCE_MAX_CANDIDATES", "3"))))
+
     critique_model = os.getenv("OPENROUTER_CRITIQUE_MODEL", "google/gemma-3-12b-it:free")
     critique_fallback = os.getenv("OPENROUTER_CRITIQUE_FALLBACK_MODELS", "google/gemma-3-4b-it:free")
     judge_model = os.getenv("OPENROUTER_JUDGE_MODEL", critique_model)
     judge_fallback = os.getenv("OPENROUTER_JUDGE_FALLBACK_MODELS", critique_fallback)
 
     base_prompt = build_reference_sheet_prompt(analysis_text, requirements)
-    draft_result = _openrouter_text(api_key, base_prompt, gen_model, gen_fallback)
-    if not draft_result["ok"]:
-        return draft_result
+    draft_candidates = []
+    for model in candidate_models[:max_candidates]:
+        candidate_result = _openrouter_text(api_key, base_prompt, model, gen_fallback)
+        if candidate_result["ok"]:
+            draft_candidates.append(candidate_result)
+    if not draft_candidates:
+        return {
+            "ok": False,
+            "error": {"error": "All candidate generation models failed."},
+            "models_tried": candidate_models[:max_candidates],
+            "failed_models": candidate_models[:max_candidates],
+        }
+
+    scored_candidates = []
+    for candidate in draft_candidates:
+        judge_result, quality = _judge_sheet_quality(
+            api_key,
+            analysis_text,
+            requirements,
+            candidate["text"],
+            judge_model,
+            judge_fallback,
+        )
+        score = quality.get("score") if quality.get("score") is not None else 0.0
+        accuracy_risk = quality.get("accuracy_risk") if quality.get("accuracy_risk") is not None else 50.0
+        blended_score = score - (0.25 * accuracy_risk)
+        scored_candidates.append(
+            {
+                "draft_result": candidate,
+                "judge_result": judge_result,
+                "quality": quality,
+                "blended_score": blended_score,
+            }
+        )
+
+    scored_candidates.sort(key=lambda item: item["blended_score"], reverse=True)
+    best_candidate = scored_candidates[0]
+    draft_result = best_candidate["draft_result"]
     draft = draft_result["text"]
 
     critique_prompt = f"""
@@ -216,54 +320,42 @@ Critique to address:
             "ok": True,
             "text": draft,
             "model_used": draft_result["model_used"],
-            "quality": {"score": None, "notes": ["Revision stage failed; using draft output."]},
+            "quality": {**best_candidate["quality"], "notes": ["Revision stage failed; using best draft output."]},
+            "candidate_quality": [
+                {
+                    "model_used": item["draft_result"]["model_used"],
+                    "score": item["quality"].get("score"),
+                    "accuracy_risk": item["quality"].get("accuracy_risk"),
+                    "blended_score": item["blended_score"],
+                }
+                for item in scored_candidates
+            ],
         }
     final_sheet = final_result["text"]
 
-    judge_prompt = f"""
-Score this Science Olympiad reference sheet and return ONLY JSON.
-Schema:
-{{
-  "score": 0-100,
-  "coverage": 0-100,
-  "accuracy_risk": 0-100,
-  "density": 0-100,
-  "requirements_fit": 0-100,
-  "issues": ["short bullet", "..."]
-}}
-
-Higher is better except `accuracy_risk` where higher = higher risk.
-
-Requirements:
-{_requirements_to_block(requirements)}
-
-Analysis:
-{analysis_text}
-
-Sheet:
-{final_sheet}
-""".strip()
-    judge_result = _openrouter_text(api_key, judge_prompt, judge_model, judge_fallback)
-    quality = {"score": None, "coverage": None, "accuracy_risk": None, "density": None, "requirements_fit": None, "issues": []}
-    if judge_result["ok"]:
-        parsed = _safe_parse_json_object(judge_result["text"])
-        if isinstance(parsed, dict):
-            quality.update(
-                {
-                    "score": parsed.get("score"),
-                    "coverage": parsed.get("coverage"),
-                    "accuracy_risk": parsed.get("accuracy_risk"),
-                    "density": parsed.get("density"),
-                    "requirements_fit": parsed.get("requirements_fit"),
-                    "issues": parsed.get("issues") if isinstance(parsed.get("issues"), list) else [],
-                }
-            )
+    judge_result, quality = _judge_sheet_quality(
+        api_key,
+        analysis_text,
+        requirements,
+        final_sheet,
+        judge_model,
+        judge_fallback,
+    )
 
     return {
         "ok": True,
         "text": final_sheet,
         "model_used": final_result["model_used"],
         "quality": quality,
+        "candidate_quality": [
+            {
+                "model_used": item["draft_result"]["model_used"],
+                "score": item["quality"].get("score"),
+                "accuracy_risk": item["quality"].get("accuracy_risk"),
+                "blended_score": item["blended_score"],
+            }
+            for item in scored_candidates
+        ],
         "pipeline_models": {
             "draft_model": draft_result["model_used"],
             "critique_model": critique_result["model_used"] if critique_result["ok"] else None,
