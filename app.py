@@ -13,9 +13,9 @@ load_dotenv()
 app = Flask(__name__)
 
 
-def call_openrouter_with_fallback(api_key, user_content):
-    primary_model = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-small-3.1-24b-instruct:free")
-    fallback_models_raw = os.getenv(
+def call_openrouter_with_fallback(api_key, user_content, primary_model=None, fallback_models_raw=None):
+    primary_model = primary_model or os.getenv("OPENROUTER_MODEL", "mistralai/mistral-small-3.1-24b-instruct:free")
+    fallback_models_raw = fallback_models_raw if fallback_models_raw is not None else os.getenv(
         "OPENROUTER_FALLBACK_MODELS",
         "google/gemma-3-12b-it:free,google/gemma-3-4b-it:free",
     )
@@ -265,7 +265,18 @@ File contents:
         user_content.append({"type": "text", "text": f"Image file: {image['filename']}"})
         user_content.append({"type": "image_url", "image_url": {"url": image["data_uri"]}})
 
-    result = call_openrouter_with_fallback(api_key, user_content)
+    has_images = len(image_files) > 0
+    if has_images:
+        image_primary_model = os.getenv("OPENROUTER_IMAGE_MODEL", "google/gemma-3-12b-it:free")
+        image_fallback_models = os.getenv("OPENROUTER_IMAGE_FALLBACK_MODELS", "google/gemma-3-4b-it:free")
+        result = call_openrouter_with_fallback(
+            api_key,
+            user_content,
+            primary_model=image_primary_model,
+            fallback_models_raw=image_fallback_models,
+        )
+    else:
+        result = call_openrouter_with_fallback(api_key, user_content)
     if not result["ok"]:
         return jsonify({**result["error"], "models_tried": result["models_tried"], "failed_models": result["failed_models"]}), 502
     text = result["text"]
@@ -313,7 +324,8 @@ Analysis to transform:
 """.strip()
 
     user_content = [{"type": "text", "text": prompt}]
-    result = call_openrouter_with_fallback(api_key, user_content)
+    reference_model = os.getenv("OPENROUTER_REFERENCE_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+    result = call_openrouter_with_fallback(api_key, user_content, primary_model=reference_model, fallback_models_raw="")
     if not result["ok"]:
         return jsonify({**result["error"], "models_tried": result["models_tried"], "failed_models": result["failed_models"]}), 502
 
