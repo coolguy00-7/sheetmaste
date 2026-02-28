@@ -1,0 +1,4 @@
+# Add one seed URL per line.
+# Use source pages that permit crawling and educational reuse.
+https://www.soinc.org/events
+https://scioly.org/wiki/index.php/Main_Page

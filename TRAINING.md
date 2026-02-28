@@ -27,6 +27,27 @@ python3 training/prepare_dataset.py \
   --output training/data/train_prepared.jsonl
 ```
 
+## 1a) Scrape online reference material (optional)
+
+You can collect candidate source pages with:
+
+```bash
+python3 training/scrape_reference_sheets.py \
+  --seed-file training/data/seed_urls.txt \
+  --output training/data/scraped_pages.jsonl \
+  --max-pages 250 \
+  --delay-seconds 1.0
+```
+
+Tips:
+- Use only sources where crawling/reuse is permitted.
+- Respect `robots.txt` and site terms.
+- Add trusted domains with `--allowed-domains`.
+- Use `--same-domain-only` for stricter crawling boundaries.
+
+Note: scraped pages are not directly train pairs. You still need to convert them into
+`analysis -> reference_sheet` examples (manually or with a curation pipeline).
+
 ## 2) Install training dependencies
 
 ```bash
