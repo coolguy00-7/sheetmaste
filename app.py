@@ -175,6 +175,36 @@ File contents:
         response = requests.post(url, headers=headers, json=payload, timeout=60)
         response.raise_for_status()
         body = response.json()
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        details = ""
+        if exc.response is not None:
+            try:
+                details = exc.response.json()
+            except ValueError:
+                details = (exc.response.text or "")[:500]
+
+        if status_code == 404:
+            return (
+                jsonify(
+                    {
+                        "error": "OpenRouter model not found or unavailable.",
+                        "model": model,
+                        "details": details,
+                    }
+                ),
+                502,
+            )
+
+        return (
+            jsonify(
+                {
+                    "error": f"OpenRouter request failed with status {status_code}.",
+                    "details": details,
+                }
+            ),
+            502,
+        )
     except requests.RequestException as exc:
         return jsonify({"error": f"OpenRouter request failed: {exc}"}), 502
 
