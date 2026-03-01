@@ -139,13 +139,15 @@ def _safe_parse_json_object(text):
         return None
 
 
-def _hf_text(api_key, prompt, primary_model, fallback_models_raw, system_prompt=None):
+def _hf_text(api_key, prompt, primary_model, fallback_models_raw, system_prompt=None, max_tokens=None, temperature=0.2):
     return call_hf_with_fallback(
         api_key,
         prompt,
         primary_model=primary_model,
         fallback_models_raw=fallback_models_raw,
         system_prompt=system_prompt,
+        max_tokens=max_tokens,
+        temperature=temperature,
     )
 
 
@@ -186,7 +188,7 @@ Analysis:
 Sheet:
 {sheet_text}
 """.strip()
-    judge_result = _hf_text(api_key, judge_prompt, judge_model, judge_fallback)
+    judge_result = _hf_text(api_key, judge_prompt, judge_model, judge_fallback, max_tokens=260, temperature=0.0)
     quality = {"score": None, "coverage": None, "accuracy_risk": None, "density": None, "requirements_fit": None, "issues": []}
     if judge_result["ok"]:
         parsed = _safe_parse_json_object(judge_result["text"])
@@ -222,7 +224,8 @@ def _generate_reference_sheet_hf_high_quality(api_key, analysis_text, requiremen
     )
     if not candidate_models:
         candidate_models = [gen_model]
-    max_candidates = max(1, min(5, int(os.getenv("HF_REFERENCE_MAX_CANDIDATES", "3"))))
+    max_candidates = max(1, min(5, int(os.getenv("HF_REFERENCE_MAX_CANDIDATES", "2"))))
+    reference_max_tokens = max(700, min(3600, int(os.getenv("HF_REFERENCE_MAX_TOKENS", "2100"))))
 
     critique_model = os.getenv("HF_CRITIQUE_MODEL", "Qwen/Qwen3.5-27B")
     critique_fallback = os.getenv("HF_CRITIQUE_FALLBACK_MODELS", "Qwen/Qwen3.5-35B-A3B")
@@ -232,7 +235,7 @@ def _generate_reference_sheet_hf_high_quality(api_key, analysis_text, requiremen
     base_prompt = build_reference_sheet_prompt(analysis_text, requirements)
     draft_candidates = []
     for model in candidate_models[:max_candidates]:
-        candidate_result = _hf_text(api_key, base_prompt, model, gen_fallback)
+        candidate_result = _hf_text(api_key, base_prompt, model, gen_fallback, max_tokens=reference_max_tokens)
         if candidate_result["ok"]:
             draft_candidates.append(candidate_result)
     if not draft_candidates:
@@ -288,7 +291,7 @@ Analysis source:
 Draft sheet:
 {draft}
 """.strip()
-    critique_result = _hf_text(api_key, critique_prompt, critique_model, critique_fallback)
+    critique_result = _hf_text(api_key, critique_prompt, critique_model, critique_fallback, max_tokens=650)
     critique = critique_result["text"] if critique_result["ok"] else "No critique available."
 
     revise_prompt = f"""
@@ -314,7 +317,7 @@ Draft:
 Critique to address:
 {critique}
 """.strip()
-    final_result = _hf_text(api_key, revise_prompt, gen_model, gen_fallback)
+    final_result = _hf_text(api_key, revise_prompt, gen_model, gen_fallback, max_tokens=reference_max_tokens)
     if not final_result["ok"]:
         return {
             "ok": True,
@@ -365,7 +368,15 @@ Critique to address:
     }
 
 
-def call_hf_with_fallback(api_key, prompt, primary_model=None, fallback_models_raw=None, system_prompt=None):
+def call_hf_with_fallback(
+    api_key,
+    prompt,
+    primary_model=None,
+    fallback_models_raw=None,
+    system_prompt=None,
+    max_tokens=None,
+    temperature=0.2,
+):
     primary_model = primary_model or os.getenv("HF_MODEL", "Qwen/Qwen3.5-27B")
     fallback_models_raw = fallback_models_raw if fallback_models_raw is not None else os.getenv(
         "HF_FALLBACK_MODELS",
@@ -379,6 +390,9 @@ def call_hf_with_fallback(api_key, prompt, primary_model=None, fallback_models_r
 
     failed_models = []
     final_error = {"error": "Hugging Face request failed.", "details": "No models attempted."}
+    max_tokens = max_tokens if max_tokens is not None else int(os.getenv("HF_MAX_TOKENS", "2100"))
+    max_tokens = max(200, min(4000, int(max_tokens)))
+    timeout_seconds = max(20, min(180, int(os.getenv("HF_TIMEOUT_SECONDS", "70"))))
 
     for model in models_to_try:
         url = "https://router.huggingface.co/v1/chat/completions"
@@ -390,13 +404,13 @@ def call_hf_with_fallback(api_key, prompt, primary_model=None, fallback_models_r
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        payload = {"model": model, "messages": messages, "max_tokens": 3500, "temperature": 0.2}
+        payload = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
 
         response = None
         last_error = None
         for attempt in range(3):
             try:
-                response = requests.post(url, headers=headers, json=payload, timeout=60)
+                response = requests.post(url, headers=headers, json=payload, timeout=timeout_seconds)
                 if response.status_code in {408, 424, 429, 500, 502, 503, 504} and attempt < 2:
                     time.sleep(1.5 * (attempt + 1))
                     continue
@@ -603,12 +617,14 @@ File contents:
         "HF_ANALYSIS_FALLBACK_MODELS",
         "Qwen/Qwen3.5-35B-A3B,Qwen/Qwen2.5-72B-Instruct",
     )
+    analysis_max_tokens = max(300, min(1800, int(os.getenv("HF_ANALYSIS_MAX_TOKENS", "900"))))
     result = _hf_text(
         api_key,
         analysis_prompt,
         analysis_model,
         analysis_fallback,
         system_prompt="You produce precise, structured educational analysis.",
+        max_tokens=analysis_max_tokens,
     )
     if not result["ok"]:
         return jsonify({**result["error"], "models_tried": result["models_tried"], "failed_models": result["failed_models"]}), 502
@@ -663,7 +679,8 @@ def generate_reference_sheet():
             "HF_REFERENCE_FALLBACK_MODELS",
             "Qwen/Qwen3.5-35B-A3B,Qwen/Qwen3.5-27B",
         )
-        result = _hf_text(api_key, prompt, reference_model, reference_fallback_models)
+        reference_max_tokens = max(700, min(3600, int(os.getenv("HF_REFERENCE_MAX_TOKENS", "2100"))))
+        result = _hf_text(api_key, prompt, reference_model, reference_fallback_models, max_tokens=reference_max_tokens)
     if not result["ok"]:
         return jsonify({**result["error"], "models_tried": result["models_tried"], "failed_models": result["failed_models"]}), 502
 
